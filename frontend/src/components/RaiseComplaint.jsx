@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import API from "../api";
+import { searchTrains, getTrainByNumber, validatePNR, verifyPNR } from "../services/trainService";
 
 export default function RaiseComplaint({ onComplaintRaised }) {
   const [form, setForm] = useState({
     pnr: "",
     trainNo: "",
+    trainName: "",
     coach: "",
     seat: "",
     category: "Cleanliness",
@@ -13,9 +15,91 @@ export default function RaiseComplaint({ onComplaintRaised }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  
+  // Train search states
+  const [trainQuery, setTrainQuery] = useState("");
+  const [trainSuggestions, setTrainSuggestions] = useState([]);
+  const [showTrainDropdown, setShowTrainDropdown] = useState(false);
+  const trainInputRef = useRef(null);
+  
+  // PNR verification states
+  const [pnrVerifying, setPnrVerifying] = useState(false);
+  const [pnrVerified, setPnrVerified] = useState(false);
+  const [pnrError, setPnrError] = useState("");
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (trainInputRef.current && !trainInputRef.current.contains(event.target)) {
+        setShowTrainDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
+  };
+
+  // Handle train search
+  const handleTrainSearch = (value) => {
+    setTrainQuery(value);
+    setForm({ ...form, trainNo: value, trainName: "" });
+    
+    if (value.length >= 2) {
+      const results = searchTrains(value);
+      setTrainSuggestions(results);
+      setShowTrainDropdown(results.length > 0);
+    } else {
+      setTrainSuggestions([]);
+      setShowTrainDropdown(false);
+    }
+  };
+
+  // Select train from dropdown
+  const handleSelectTrain = (train) => {
+    setForm({ ...form, trainNo: train.number, trainName: train.name });
+    setTrainQuery(`${train.number} - ${train.name}`);
+    setShowTrainDropdown(false);
+  };
+
+  // Verify PNR
+  const handleVerifyPNR = async () => {
+    if (!form.pnr) {
+      setPnrError("Please enter PNR number");
+      return;
+    }
+
+    if (!validatePNR(form.pnr)) {
+      setPnrError("Invalid PNR format. Must be 10 digits.");
+      return;
+    }
+
+    setPnrVerifying(true);
+    setPnrError("");
+
+    try {
+      const result = await verifyPNR(form.pnr);
+      
+      if (result.valid) {
+        setPnrVerified(true);
+        setForm({
+          ...form,
+          trainNo: result.train.number,
+          trainName: result.train.name,
+          coach: result.passenger.coach,
+          seat: result.passenger.seat,
+        });
+        setTrainQuery(`${result.train.number} - ${result.train.name}`);
+        setSuccess("PNR verified successfully! ✅");
+      }
+    } catch (err) {
+      setPnrError(err.message || "Failed to verify PNR");
+      setPnrVerified(false);
+    } finally {
+      setPnrVerifying(false);
+    }
   };
 
   const submitComplaint = async (e) => {
@@ -25,16 +109,27 @@ export default function RaiseComplaint({ onComplaintRaised }) {
     setLoading(true);
 
     try {
-      const res = await API.post("/complaints", form);
+      const res = await API.post("/complaints", {
+        pnr: form.pnr,
+        trainNo: form.trainNo,
+        coach: form.coach,
+        seat: form.seat,
+        category: form.category,
+        description: form.description,
+      });
+      
       setSuccess("Complaint submitted successfully! 🎉");
       setForm({
         pnr: "",
         trainNo: "",
+        trainName: "",
         coach: "",
         seat: "",
         category: "Cleanliness",
         description: "",
       });
+      setTrainQuery("");
+      setPnrVerified(false);
       
       if (onComplaintRaised) {
         onComplaintRaised();
@@ -96,37 +191,93 @@ export default function RaiseComplaint({ onComplaintRaised }) {
 
       {/* Form */}
       <form onSubmit={submitComplaint} className="space-y-6">
-        {/* PNR and Train Number Row */}
-        <div className="grid md:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
-              PNR Number *
-            </label>
-            <input
-              type="text"
-              name="pnr"
-              placeholder="e.g., 1234567890"
-              value={form.pnr}
-              onChange={handleChange}
-              required
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
-            />
+        {/* PNR with Verification */}
+        <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-2">
+            PNR Number *
+          </label>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <input
+                type="text"
+                name="pnr"
+                placeholder="Enter 10-digit PNR"
+                value={form.pnr}
+                onChange={handleChange}
+                maxLength="10"
+                required
+                className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none ${
+                  pnrVerified ? "border-green-500 bg-green-50" : "border-gray-300"
+                }`}
+              />
+              {pnrError && (
+                <p className="text-red-500 text-xs mt-1">{pnrError}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={handleVerifyPNR}
+              disabled={pnrVerifying || !form.pnr}
+              className={`px-6 py-3 rounded-lg font-medium transition-all ${
+                pnrVerified
+                  ? "bg-green-500 text-white"
+                  : "bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-300 disabled:cursor-not-allowed"
+              }`}
+            >
+              {pnrVerifying ? (
+                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ) : pnrVerified ? (
+                "✓ Verified"
+              ) : (
+                "Verify PNR"
+              )}
+            </button>
           </div>
+          <p className="text-xs text-gray-500 mt-1">
+            💡 Verify your PNR to auto-fill train and seat details
+          </p>
+        </div>
 
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
-              Train Number *
-            </label>
-            <input
-              type="text"
-              name="trainNo"
-              placeholder="e.g., 12345"
-              value={form.trainNo}
-              onChange={handleChange}
-              required
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
-            />
-          </div>
+        {/* Train Search with Autocomplete */}
+        <div ref={trainInputRef} className="relative">
+          <label className="block text-sm font-semibold text-gray-700 mb-2">
+            Train Number / Name *
+          </label>
+          <input
+            type="text"
+            placeholder="Search by train number or name"
+            value={trainQuery}
+            onChange={(e) => handleTrainSearch(e.target.value)}
+            onFocus={() => trainSuggestions.length > 0 && setShowTrainDropdown(true)}
+            required
+            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+          />
+          
+          {/* Autocomplete Dropdown */}
+          {showTrainDropdown && trainSuggestions.length > 0 && (
+            <div className="absolute z-10 w-full mt-2 bg-white border border-gray-200 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+              {trainSuggestions.map((train) => (
+                <button
+                  key={train.number}
+                  type="button"
+                  onClick={() => handleSelectTrain(train)}
+                  className="w-full px-4 py-3 text-left hover:bg-blue-50 transition-colors border-b border-gray-100 last:border-b-0"
+                >
+                  <div className="font-semibold text-gray-800">{train.number}</div>
+                  <div className="text-sm text-gray-600">{train.name}</div>
+                </button>
+              ))}
+            </div>
+          )}
+          
+          {form.trainName && (
+            <p className="text-sm text-green-600 mt-1 font-medium">
+              ✓ {form.trainName}
+            </p>
+          )}
         </div>
 
         {/* Coach and Seat Row */}

@@ -1,16 +1,62 @@
 const router = require("express").Router();
 const Complaint = require("../models/complaints");
+const User = require("../models/User");
 const { verifyToken, checkRole } = require("../middleware/auth");
 
 // All routes require authentication
 router.use(verifyToken);
 
-// Raise complaint (Passengers only)
+
+// DEBUG: Check available receivers
+router.get("/debug/receivers/:category", async (req, res) => {
+  try {
+    const receivers = await User.find({
+      role: "complaint-receiver",
+      assignedCategory: req.params.category,
+      isAvailable: true,
+    });
+    
+    res.json({
+      category: req.params.category,
+      count: receivers.length,
+      receivers: receivers.map(r => ({
+        name: r.name,
+        email: r.email,
+        category: r.assignedCategory
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper function to generate 6-digit OTP
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Helper function to find nearest available receiver
+const findNearestReceiver = async (category, trainNo, coach) => {
+  // Find all complaint receivers for this category who are available
+  const receivers = await User.find({
+    role: "complaint-receiver",
+    assignedCategory: category,
+    isAvailable: true,
+  });
+
+  if (receivers.length === 0) return null;
+
+  // TODO: In future, implement actual location-based matching
+  // For now, return first available receiver
+  // You can enhance this with location matching logic
+  return receivers[0];
+};
+
+// Raise complaint (Passengers only) - WITH AUTO-ASSIGNMENT
 router.post("/", checkRole("passenger"), async (req, res) => {
   try {
     const { pnr, trainNo, coach, seat, category, description } = req.body;
 
-    // Validation
     if (!pnr || !trainNo || !coach || !seat || !category || !description) {
       return res.status(400).json({ message: "All fields are required" });
     }
@@ -19,6 +65,9 @@ router.post("/", checkRole("passenger"), async (req, res) => {
     let priority = "Normal";
     if (category === "Safety") priority = "Critical";
     else if (category === "Electrical" || category === "Mechanical") priority = "High";
+
+    // Find nearest available receiver for this category
+    const receiver = await findNearestReceiver(category, trainNo, coach);
 
     const complaint = new Complaint({
       pnr,
@@ -29,18 +78,25 @@ router.post("/", checkRole("passenger"), async (req, res) => {
       description,
       priority,
       createdBy: req.user.id,
+      assignedTo: receiver?._id || null,
+      status: receiver ? "Assigned" : "Raised",
       statusHistory: [{
-        status: "Raised",
+        status: receiver ? "Assigned" : "Raised",
         updatedBy: req.user.id,
-        comment: "Complaint raised by passenger"
+        comment: receiver 
+          ? `Auto-assigned to ${receiver.name} (${category} specialist)`
+          : "Complaint raised by passenger"
       }]
     });
 
     await complaint.save();
     await complaint.populate("createdBy", "name email");
+    await complaint.populate("assignedTo", "name email assignedCategory");
 
     res.status(201).json({
-      message: "Complaint submitted successfully",
+      message: receiver 
+        ? `Complaint assigned to ${receiver.name}` 
+        : "Complaint submitted successfully",
       complaint,
     });
   } catch (err) {
@@ -54,22 +110,22 @@ router.get("/", async (req, res) => {
   try {
     let filter = {};
 
-    // Passengers can only see their own complaints
     if (req.user.role === "passenger") {
       filter.createdBy = req.user.id;
-    }
-    // TTE sees assigned complaints or unassigned
-    else if (req.user.role === "tte") {
+    } else if (req.user.role === "complaint-receiver") {
+      // Complaint receivers see only their assigned complaints
+      filter.assignedTo = req.user.id;
+    } else if (req.user.role === "tte") {
       filter.$or = [
         { assignedTo: req.user.id },
-        { assignedTo: null, status: { $in: ["Raised", "Pending"] } }
+        { assignedTo: null, status: { $in: ["Raised", "Assigned"] } }
       ];
     }
-    // Admin and complaint-receiver see all complaints
+    // Admin sees all
 
     const complaints = await Complaint.find(filter)
       .populate("createdBy", "name email")
-      .populate("assignedTo", "name email employeeId")
+      .populate("assignedTo", "name email employeeId assignedCategory")
       .sort({ createdAt: -1 });
 
     res.json({ complaints, count: complaints.length });
@@ -79,12 +135,12 @@ router.get("/", async (req, res) => {
   }
 });
 
-// Get single complaint by ID
+// Get single complaint
 router.get("/:id", async (req, res) => {
   try {
     const complaint = await Complaint.findById(req.params.id)
       .populate("createdBy", "name email")
-      .populate("assignedTo", "name email employeeId")
+      .populate("assignedTo", "name email employeeId assignedCategory")
       .populate("comments.addedBy", "name email")
       .populate("statusHistory.updatedBy", "name email");
 
@@ -92,7 +148,7 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ message: "Complaint not found" });
     }
 
-    // Check permission - passengers can only see their own
+    // Check permission
     if (req.user.role === "passenger" && complaint.createdBy._id.toString() !== req.user.id) {
       return res.status(403).json({ message: "Access denied" });
     }
@@ -104,7 +160,8 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// Update complaint status (TTE, Admin, Complaint Receiver)
+// Update complaint status (for TTE and Admin only - NOT complaint receiver)
+// Update complaint status (TTE, Admin, AND Complaint Receiver)
 router.put("/:id/status", checkRole("tte", "admin", "complaint-receiver"), async (req, res) => {
   try {
     const { status, comment } = req.body;
@@ -119,31 +176,42 @@ router.put("/:id/status", checkRole("tte", "admin", "complaint-receiver"), async
       return res.status(404).json({ message: "Complaint not found" });
     }
 
+    // Complaint receivers can only update their assigned complaints
+    if (req.user.role === "complaint-receiver") {
+      if (!complaint.assignedTo || complaint.assignedTo.toString() !== req.user.id) {
+        return res.status(403).json({ message: "This complaint is not assigned to you" });
+      }
+    }
+
     // TTE can only update assigned complaints
-     if (req.user.role === "tte") {
-      // Check if complaint is assigned to this TTE
+    if (req.user.role === "tte") {
       if (complaint.assignedTo && complaint.assignedTo.toString() !== req.user.id) {
         return res.status(403).json({ message: "You can only update complaints assigned to you" });
       }
-      // Also allow TTE to update unassigned complaints
+      // Auto-assign to this TTE if unassigned
       if (!complaint.assignedTo && complaint.status === "Raised") {
-        // Auto-assign to this TTE
         complaint.assignedTo = req.user.id;
       }
     }
 
+    // Update status
     complaint.status = status;
+    
+    // Add to status history
     complaint.statusHistory.push({
       status,
       updatedBy: req.user.id,
       comment: comment || `Status updated to ${status}`,
     });
-    
+
+    // Update updatedAt
     complaint.updatedAt = Date.now();
 
     await complaint.save();
+    
+    // Populate fields before sending response
     await complaint.populate("createdBy", "name email");
-    await complaint.populate("assignedTo", "name email employeeId");
+    await complaint.populate("assignedTo", "name email employeeId assignedCategory");
     await complaint.populate("statusHistory.updatedBy", "name email");
 
     res.json({
@@ -155,14 +223,58 @@ router.put("/:id/status", checkRole("tte", "admin", "complaint-receiver"), async
     res.status(500).json({ message: "Server error", error: err.message });
   }
 });
-
-// Assign complaint to TTE (Admin and Complaint Receiver only)
-router.put("/:id/assign", checkRole("admin", "complaint-receiver"), async (req, res) => {
+// Mark as Done and Generate OTP (Complaint Receiver only)
+router.put("/:id/mark-done", checkRole("complaint-receiver"), async (req, res) => {
   try {
-    const { tteId } = req.body;
+    const complaint = await Complaint.findById(req.params.id);
 
-    if (!tteId) {
-      return res.status(400).json({ message: "TTE ID is required" });
+    if (!complaint) {
+      return res.status(404).json({ message: "Complaint not found" });
+    }
+
+    // Check if complaint is assigned to this receiver
+    if (complaint.assignedTo?.toString() !== req.user.id) {
+      return res.status(403).json({ message: "This complaint is not assigned to you" });
+    }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    complaint.otp = otp;
+    complaint.otpGeneratedAt = Date.now();
+    complaint.otpExpiresAt = expiresAt;
+    complaint.status = "Pending Verification";
+    complaint.otpVerified = false;
+
+    complaint.statusHistory.push({
+      status: "Pending Verification",
+      updatedBy: req.user.id,
+      comment: "Work completed. Waiting for passenger verification.",
+    });
+
+    await complaint.save();
+    await complaint.populate("createdBy assignedTo", "name email");
+
+    res.json({
+      message: "OTP generated successfully. Please share with passenger.",
+      complaint,
+      otp, // Send OTP to receiver so they can share with passenger
+      expiresAt,
+    });
+  } catch (err) {
+    console.error("Error generating OTP:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
+// Verify OTP (Passenger only)
+router.post("/:id/verify-otp", checkRole("passenger"), async (req, res) => {
+  try {
+    const { otp } = req.body;
+
+    if (!otp) {
+      return res.status(400).json({ message: "OTP is required" });
     }
 
     const complaint = await Complaint.findById(req.params.id);
@@ -171,28 +283,56 @@ router.put("/:id/assign", checkRole("admin", "complaint-receiver"), async (req, 
       return res.status(404).json({ message: "Complaint not found" });
     }
 
-    complaint.assignedTo = tteId;
-    complaint.status = "Pending";
+    // Check if complaint belongs to this passenger
+    if (complaint.createdBy.toString() !== req.user.id) {
+      return res.status(403).json({ message: "This is not your complaint" });
+    }
+
+    // Check if OTP exists
+    if (!complaint.otp) {
+      return res.status(400).json({ message: "No OTP generated for this complaint" });
+    }
+
+    // Check if OTP expired
+    if (new Date() > complaint.otpExpiresAt) {
+      return res.status(400).json({ message: "OTP has expired. Please request a new one." });
+    }
+
+    // Verify OTP
+    if (complaint.otp !== otp) {
+      return res.status(400).json({ message: "Invalid OTP. Please try again." });
+    }
+
+    // OTP is correct - mark as resolved
+    complaint.status = "Resolved";
+    complaint.otpVerified = true;
+    complaint.resolvedAt = Date.now();
+
     complaint.statusHistory.push({
-      status: "Pending",
+      status: "Resolved",
       updatedBy: req.user.id,
-      comment: "Complaint assigned to TTE",
+      comment: "Verified by passenger. Complaint resolved successfully.",
     });
 
+    // Clear OTP data
+    complaint.otp = undefined;
+    complaint.otpGeneratedAt = undefined;
+    complaint.otpExpiresAt = undefined;
+
     await complaint.save();
-    await complaint.populate("createdBy assignedTo", "name email employeeId");
+    await complaint.populate("createdBy assignedTo", "name email");
 
     res.json({
-      message: "Complaint assigned successfully",
+      message: "Complaint verified and resolved successfully! ✅",
       complaint,
     });
   } catch (err) {
-    console.error("Error assigning complaint:", err);
+    console.error("Error verifying OTP:", err);
     res.status(500).json({ message: "Server error", error: err.message });
   }
 });
 
-// Add comment to complaint
+// Add comment
 router.post("/:id/comment", async (req, res) => {
   try {
     const { text } = req.body;
@@ -207,7 +347,6 @@ router.post("/:id/comment", async (req, res) => {
       return res.status(404).json({ message: "Complaint not found" });
     }
 
-    // Check permission
     if (req.user.role === "passenger" && complaint.createdBy.toString() !== req.user.id) {
       return res.status(403).json({ message: "Access denied" });
     }
@@ -230,22 +369,21 @@ router.post("/:id/comment", async (req, res) => {
   }
 });
 
-// Get dashboard statistics (Admin only)
-router.get("/stats/dashboard", checkRole("admin", "complaint-receiver"), async (req, res) => {
+// Dashboard statistics
+router.get("/stats/dashboard", checkRole("admin"), async (req, res) => {
   try {
     const totalComplaints = await Complaint.countDocuments();
     const raisedComplaints = await Complaint.countDocuments({ status: "Raised" });
-    const pendingComplaints = await Complaint.countDocuments({ status: "Pending" });
+    const assignedComplaints = await Complaint.countDocuments({ status: "Assigned" });
     const inProgressComplaints = await Complaint.countDocuments({ status: "In Progress" });
+    const pendingVerification = await Complaint.countDocuments({ status: "Pending Verification" });
     const resolvedComplaints = await Complaint.countDocuments({ status: "Resolved" });
     const criticalComplaints = await Complaint.countDocuments({ priority: "Critical" });
 
-    // Category-wise breakdown
     const categoryStats = await Complaint.aggregate([
       { $group: { _id: "$category", count: { $sum: 1 } } },
     ]);
 
-    // Priority-wise breakdown
     const priorityStats = await Complaint.aggregate([
       { $group: { _id: "$priority", count: { $sum: 1 } } },
     ]);
@@ -253,8 +391,9 @@ router.get("/stats/dashboard", checkRole("admin", "complaint-receiver"), async (
     res.json({
       totalComplaints,
       raisedComplaints,
-      pendingComplaints,
+      assignedComplaints,
       inProgressComplaints,
+      pendingVerification,
       resolvedComplaints,
       criticalComplaints,
       categoryStats,

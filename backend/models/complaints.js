@@ -33,7 +33,7 @@ const ComplaintSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ["Raised", "Pending", "In Progress", "Resolved", "Closed", "Rejected"],
+    enum: ["Raised", "Assigned", "In Progress", "Pending Verification", "Resolved", "Closed", "Rejected"],
     default: "Raised",
   },
   createdBy: {
@@ -44,6 +44,23 @@ const ComplaintSchema = new mongoose.Schema({
   assignedTo: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
+  },
+  // OTP System for verification
+  otp: {
+    type: String,
+  },
+  otpVerified: {
+    type: Boolean,
+    default: false,
+  },
+  otpGeneratedAt: {
+    type: Date,
+  },
+  otpExpiresAt: {
+    type: Date,
+  },
+  resolvedAt: {
+    type: Date,
   },
   comments: [
     {
@@ -81,8 +98,5 @@ const ComplaintSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
-
-// Update the updatedAt timestamp before saving
-
 
 module.exports = mongoose.model("Complaint", ComplaintSchema);

@@ -21,8 +21,22 @@ const UserSchema = new mongoose.Schema({
     default: "passenger",
   },
   employeeId: {
-    type: String, // For TTE and Admin
+    type: String,
     sparse: true,
+  },
+  // For Complaint Receivers - their specialized category
+  assignedCategory: {
+    type: String,
+    enum: ["Cleanliness", "Electrical", "Mechanical", "Safety", "Food", "Staff Behavior", "Other"],
+  },
+  // For location-based assignment (future feature)
+  currentLocation: {
+    train: String,
+    coach: String,
+  },
+  isAvailable: {
+    type: Boolean,
+    default: true,
   },
   createdAt: {
     type: Date,

@@ -9,6 +9,7 @@ export default function Register() {
     password: "",
     confirmPassword: "",
     role: "passenger",
+    assignedCategory: "",
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -36,14 +37,22 @@ export default function Register() {
     setLoading(true);
 
     try {
-      const data = await register(formData.name, formData.email, formData.password, formData.role);
+      const data = await register(
+        formData.name, 
+        formData.email, 
+        formData.password, 
+        formData.role,
+        formData.assignedCategory
+      );
       
       if (data.user.role === "passenger") {
         navigate("/passenger");
-      } else if (data.user.role === "TTE") {
-        navigate("/TTE");
-      } else if (data.user.role === "admin" || data.user.role === "complaint-receiver") {
+      } else if (data.user.role === "tte") {
+        navigate("/tte");
+      } else if (data.user.role === "admin") {
         navigate("/admin");
+      } else if (data.user.role === "complaint-receiver") {
+        navigate("/complaint-receiver");
       }
     } catch (err) {
       setError(err.response?.data?.message || "Registration failed");
@@ -54,7 +63,7 @@ export default function Register() {
 
   const roleIcons = {
     passenger: "🧳",
-    TTE: "🚂",
+    tte: "🚂",
     admin: "👔",
     "complaint-receiver": "📋"
   };
@@ -158,7 +167,7 @@ export default function Register() {
                 Select Your Role
               </label>
               <div className="grid grid-cols-2 gap-3">
-                {["passenger", "TTE", "admin", "complaint-receiver"].map((role) => (
+                {["passenger", "tte", "admin", "complaint-receiver"].map((role) => (
                   <label
                     key={role}
                     className={`relative flex items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
@@ -192,6 +201,34 @@ export default function Register() {
                 ))}
               </div>
             </div>
+
+            {/* Category Selection for Complaint Receivers */}
+            {formData.role === "complaint-receiver" && (
+              <div className="animate-fadeIn">
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Select Your Specialized Category *
+                </label>
+                <select
+                  name="assignedCategory"
+                  value={formData.assignedCategory}
+                  onChange={handleChange}
+                  required
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                >
+                  <option value="">Choose category...</option>
+                  <option value="Cleanliness">🧹 Cleanliness</option>
+                  <option value="Electrical">⚡ Electrical</option>
+                  <option value="Mechanical">🔧 Mechanical</option>
+                  <option value="Safety">🚨 Safety</option>
+                  <option value="Food">🍽️ Food</option>
+                  <option value="Staff Behavior">👥 Staff Behavior</option>
+                  <option value="Other">📋 Other</option>
+                </select>
+                <p className="mt-2 text-sm text-blue-600 bg-blue-50 p-2 rounded">
+                  You will only receive complaints related to {formData.assignedCategory || "your selected category"}
+                </p>
+              </div>
+            )}
 
             {/* Submit Button */}
             <button

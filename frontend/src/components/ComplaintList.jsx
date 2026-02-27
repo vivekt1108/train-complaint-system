@@ -9,6 +9,8 @@ export default function ComplaintList({ refresh }) {
   const [error, setError] = useState("");
   const [updatingId, setUpdatingId] = useState(null);
   const [updateForm, setUpdateForm] = useState({ status: "", comment: "" });
+  const [otpInput, setOtpInput] = useState("");
+  const [verifyingId, setVerifyingId] = useState(null);
 
   useEffect(() => {
     fetchComplaints();
@@ -34,10 +36,29 @@ export default function ComplaintList({ refresh }) {
       alert("Status updated successfully!");
       setUpdatingId(null);
       setUpdateForm({ status: "", comment: "" });
-      fetchComplaints(); // Refresh list
+      fetchComplaints();
     } catch (err) {
       alert(err.response?.data?.message || "Failed to update status");
       console.error("Update error:", err);
+    }
+  };
+
+  const handleVerifyOTP = async (complaintId) => {
+    if (!otpInput || otpInput.length !== 6) {
+      alert("Please enter a valid 6-digit OTP");
+      return;
+    }
+
+    try {
+      setVerifyingId(complaintId);
+      await API.post(`/complaints/${complaintId}/verify-otp`, { otp: otpInput });
+      alert("✅ Complaint verified successfully!");
+      setOtpInput("");
+      fetchComplaints();
+    } catch (err) {
+      alert(err.response?.data?.message || "Invalid OTP. Please try again.");
+    } finally {
+      setVerifyingId(null);
     }
   };
 
@@ -279,6 +300,72 @@ export default function ComplaintList({ refresh }) {
                     📝 Update Status
                   </button>
                 )}
+              </div>
+            )}
+
+            {/* OTP Verification Section - For Passengers when status is "Pending Verification" */}
+            {user.role === "passenger" && c.status === "Pending Verification" && (
+              <div style={{ 
+                marginTop: "15px", 
+                paddingTop: "15px", 
+                borderTop: "2px solid #fbbf24",
+                background: "#fffbeb",
+                padding: "15px",
+                borderRadius: "8px"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", marginBottom: "10px" }}>
+                  <svg style={{ width: "24px", height: "24px", color: "#f59e0b", marginRight: "8px" }} fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                  </svg>
+                  <h4 style={{ margin: 0, color: "#92400e", fontSize: "16px", fontWeight: "bold" }}>
+                    ✅ Work Completed - Verify with OTP
+                  </h4>
+                </div>
+                
+                <p style={{ fontSize: "13px", color: "#78350f", marginBottom: "10px" }}>
+                  The complaint receiver has completed the work. Please ask them for the OTP and enter it below to confirm.
+                </p>
+
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <input
+                    type="text"
+                    placeholder="Enter 6-digit OTP"
+                    value={otpInput}
+                    onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    maxLength="6"
+                    style={{
+                      flex: 1,
+                      padding: "10px",
+                      border: "2px solid #fbbf24",
+                      borderRadius: "6px",
+                      fontSize: "18px",
+                      letterSpacing: "4px",
+                      textAlign: "center",
+                      fontWeight: "bold"
+                    }}
+                  />
+                  <button
+                    onClick={() => handleVerifyOTP(c._id)}
+                    disabled={verifyingId === c._id || !otpInput || otpInput.length !== 6}
+                    style={{
+                      padding: "10px 20px",
+                      background: (verifyingId === c._id || !otpInput || otpInput.length !== 6) ? "#ccc" : "#10b981",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "6px",
+                      cursor: (verifyingId === c._id || !otpInput || otpInput.length !== 6) ? "not-allowed" : "pointer",
+                      fontSize: "14px",
+                      fontWeight: "bold",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {verifyingId === c._id ? "Verifying..." : "Verify OTP"}
+                  </button>
+                </div>
+
+                <p style={{ fontSize: "11px", color: "#92400e", marginTop: "8px", fontStyle: "italic" }}>
+                  💡 OTP is valid for 10 minutes from generation
+                </p>
               </div>
             )}
 

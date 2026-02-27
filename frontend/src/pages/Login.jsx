@@ -22,8 +22,10 @@ export default function Login() {
         navigate("/passenger");
       } else if (data.user.role === "tte") {
         navigate("/tte");
-      } else if (data.user.role === "admin" || data.user.role === "complaint-receiver") {
+      } else if (data.user.role === "admin") {
         navigate("/admin");
+      } else if (data.user.role === "complaint-receiver") {
+        navigate("/complaint-receiver");
       }
     } catch (err) {
       setError(err.response?.data?.message || "Login failed");

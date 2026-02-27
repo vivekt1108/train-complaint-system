@@ -6,11 +6,16 @@ const User = require("../models/User");
 // Register new user
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password, role, employeeId } = req.body;
+    const { name, email, password, role, employeeId, assignedCategory } = req.body;
 
     // Validation
     if (!name || !email || !password) {
       return res.status(400).json({ message: "Please provide all required fields" });
+    }
+
+    // Validate complaint-receiver must have category
+    if (role === "complaint-receiver" && !assignedCategory) {
+      return res.status(400).json({ message: "Complaint receivers must select a category" });
     }
 
     // Check if user exists
@@ -30,6 +35,7 @@ router.post("/register", async (req, res) => {
       password: hashedPassword,
       role: role || "passenger",
       employeeId,
+      assignedCategory: role === "complaint-receiver" ? assignedCategory : undefined,
     });
 
     await user.save();
@@ -49,6 +55,7 @@ router.post("/register", async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        assignedCategory: user.assignedCategory,
       },
     });
   } catch (err) {
@@ -62,24 +69,20 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validation
     if (!email || !password) {
       return res.status(400).json({ message: "Please provide email and password" });
     }
 
-    // Check if user exists
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // Generate JWT token
     const token = jwt.sign(
       { id: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
@@ -94,6 +97,7 @@ router.post("/login", async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        assignedCategory: user.assignedCategory,
       },
     });
   } catch (err) {
